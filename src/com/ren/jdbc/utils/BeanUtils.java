@@ -27,8 +27,9 @@ public class BeanUtils {
                         f.set(obj, map.get(name));
                     } catch (IllegalArgumentException e) {
                         e.printStackTrace();
-                    } catch (IllegalAccessException e) {
-                        e.printStackTrace();
+                        throw e;
+                    } catch (IllegalAccessException e2) {
+                        e2.printStackTrace();
                     }
                     break;
                 }

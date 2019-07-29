@@ -13,7 +13,12 @@ public interface Executor {
      * @return
      */
     <E> List<E> query(StatementMapper sm, Class<E> clazz, Object ...objs);
-    
+    /**
+     * 如果是添加 & 使用自增主键. 返回的int是新加入数据的主键
+     * @param sm
+     * @param objects
+     * @return
+     */
     int update(StatementMapper sm, Object...objects);
     /**
      * 如果无查询结果，返回一个null;否则，有多个，返回第一个

@@ -60,8 +60,7 @@ public class BoundSql {
         this.myargs = new ArrayList<>();
     }
     /**
-     *  对于insert来说，
-     *  
+     * 生成SQL
      * @return
      */
     public String getSql() {
@@ -106,9 +105,20 @@ public class BoundSql {
     }
     private String commons() {
         if (checkCommons()) {
-            return SPACE + WHERE + SPACE + this.commons;
+            if (!isOnlyLimit())
+                return SPACE + WHERE + SPACE + this.commons;
+            else {
+                return SPACE + this.commons;
+            }
         }
         return "";
+    }
+    private boolean isOnlyLimit() {
+        String s = this.commons.replace(" ", "");
+        if (s.equalsIgnoreCase("limit?,?") || "limit?".equalsIgnoreCase(s)) {
+            return true;
+        }
+        return false;
     }
     private String tables() {
         StringBuilder sb = new StringBuilder();
@@ -187,6 +197,9 @@ public class BoundSql {
         for (Object o:obj)
             this.myargs.add(o);
     }
+    /**
+     * 如果这个插入的sql 使用自增, 返回true.
+     */
     private boolean useGeneratedKey;
     public boolean isUseGeneratedKey() {
         return useGeneratedKey;

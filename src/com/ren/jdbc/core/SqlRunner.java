@@ -155,8 +155,9 @@ public class SqlRunner {
             if (args[i] == null) {
                 ps.setObject(i + 1, null);
             }else {
-                TypeHandler typeHandler = typeHandlerRegistry.getTypeHandler(args[i].getClass());
-                typeHandler.setParameter(ps, i + 1, args[i]);
+//                TypeHandler typeHandler = typeHandlerRegistry.getTypeHandler(args[i].getClass());
+//                typeHandler.setParameter(ps, i + 1, args[i]);
+                ps.setObject(i + 1, args[i]);
             }
             
         }
@@ -190,8 +191,9 @@ public class SqlRunner {
                 Map<String, Object> row = new HashMap<String, Object>();
                 for (int i = 0, n = columns.size(); i < n; i++) {
                     String name = columns.get(i);
+                    Object value = rs.getObject(i+1);
                     // 处理数据库Null值
-                    if (rs.getObject(i+1) == null) {
+                    if (value == null) {
                         row.put(name, null);
                         continue;
                     }

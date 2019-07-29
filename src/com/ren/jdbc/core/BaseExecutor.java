@@ -26,8 +26,8 @@ public class BaseExecutor implements Executor {
             if (map == null) {
                 return null;
             }
-            E e = config.getPojoConfigMap().get(clazz).getBeanMapNamePreHandler()
-                    .map(map, clazz);
+            E e = config.getTableConfigMap().get(clazz)
+                    .mapToBean(map, clazz);
             new CascadeBeanHandler<>(config, sm, e, map).fillCascade();
             return e;
         } catch (SQLException e) {
@@ -42,8 +42,8 @@ public class BaseExecutor implements Executor {
         try {
             List<Map<String, Object>> lists = sr.selectAll(sm.getSql(), objs);
             for (int i = 0;i < lists.size();i++) {
-                E e = config.getPojoConfigMap().get(clazz).getBeanMapNamePreHandler()
-                        .map(lists.get(i), clazz);
+                E e = config.getTableConfigMap().get(clazz)
+                        .mapToBean(lists.get(i), clazz);
                 // 把配置的级联查询的部分填充
                 new CascadeBeanHandler<>(config, sm, e, lists.get(i)).fillCascade();
                 ret.add(e);

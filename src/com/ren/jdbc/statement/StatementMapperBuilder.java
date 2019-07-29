@@ -2,12 +2,11 @@ package com.ren.jdbc.statement;
 
 import java.lang.reflect.Field;
 import java.sql.Connection;
-import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import com.ren.jdbc.config.Configuration;
-import com.ren.jdbc.config.PJConfig;
+import com.ren.jdbc.config.TableConfig;
 import com.ren.jdbc.sql.BoundSql;
 import com.ren.jdbc.sql.SqlType;
 import com.ren.jdbc.utils.CommonUtils;
@@ -21,15 +20,13 @@ public class StatementMapperBuilder {
      * @return
      */
     public StatementMapper selectOneById(Class clazz, Configuration config, Connection conn) {
-        PJConfig pjc = config.getPojoConfigMap().get(clazz);
+        TableConfig tableConfig = config.getTableConfigMap().get(clazz);
         Map<SqlType, BoundSql> map = config.getSqlsByClass(clazz);
         BoundSql bs = map.get(SqlType.SELECT);
         // 使用复制的bs
         bs = copy(bs);
-        if (pjc.getIds().size() != 1) {
-            throw new RuntimeException("只适用与一个@Id的对象");
-        }
-        bs.setCommons(pjc.getIds().get(0) + BoundSql.EQUAL + BoundSql.QM);
+
+        bs.setCommons(CommonUtils.getIdsCommons(tableConfig));
         return new StatementMapper(conn, bs);
     }
     /**
@@ -41,7 +38,7 @@ public class StatementMapperBuilder {
      * @return
      */
     public StatementMapper selectList(Class clazz, Configuration config, Connection conn, String condition) {
-        PJConfig pjc = config.getPojoConfigMap().get(clazz);
+        TableConfig tableConfig = config.getTableConfigMap().get(clazz);
         Map<SqlType, BoundSql> map = config.getSqlsByClass(clazz);
         BoundSql bs = map.get(SqlType.SELECT);
         // 使用复制的bs
@@ -57,6 +54,7 @@ public class StatementMapperBuilder {
     }
     /**
      * 删除某个对象的sm
+     * BoundSQL 的args 已经处理好.
      * @param clazz
      * @param config
      * @param conn
@@ -67,13 +65,13 @@ public class StatementMapperBuilder {
      * @throws IllegalArgumentException 
      */
     public StatementMapper deleteOne(Class<?> clazz, Configuration config, Connection conn, Object obj) throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException {
-        PJConfig pjc = config.getPojoConfigMap().get(clazz);
+        TableConfig tableConfig = config.getTableConfigMap().get(clazz);
         Map<SqlType, BoundSql> map = config.getSqlsByClass(clazz);
         BoundSql bs = map.get(SqlType.DELETE);
         bs = copy(bs);
         
-        bs.setCommons(CommonUtils.getIdsCommons(pjc));
-        bs.addArgs(CommonUtils.getIdArgs(pjc, obj));
+        bs.setCommons(CommonUtils.getIdsCommons(tableConfig));
+        bs.addArgs(CommonUtils.getIdArgs(tableConfig, obj));
         
         return new StatementMapper(conn, bs);
     }
@@ -91,90 +89,85 @@ public class StatementMapperBuilder {
      * @throws ClassNotFoundException 
      */
     public StatementMapper insertOne(Class<?> clazz, Configuration config, Connection conn, Object obj) throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException, ClassNotFoundException {
-        PJConfig pjc = config.getPojoConfigMap().get(clazz);
+        TableConfig tableConfig = config.getTableConfigMap().get(clazz);
         Map<SqlType, BoundSql> map = config.getSqlsByClass(clazz);
-        BoundSql bs = map.get(SqlType.INSERT);
-        bs = copy(bs);
-        bs.setUseGeneratedKey(pjc.isUseGenerate());
+        BoundSql getbs = map.get(SqlType.INSERT);
+        final BoundSql bs = copy(getbs);
+        bs.setUseGeneratedKey(tableConfig.isUseGenerate());
         // view: columns + ids + onesmap.keyset
-        if (pjc.isUseGenerate() == false) {
-            bs.getView().addAll(pjc.getIds());
+        if (tableConfig.isUseGenerate() == false) {
+            bs.getView().addAll(tableConfig.columnList(e->{return e.isId();}));
         }
-        bs.getView().addAll(pjc.getOnesMap().keySet());
-        bs.addArgs(CommonUtils.getArgs(obj, pjc.getColJavas())); // 放入columns
-        if (pjc.isUseGenerate() == false) {
-            bs.addArgs(CommonUtils.getIdArgs(pjc, obj));
+        bs.getView().addAll(tableConfig.columnList(e->{return e.isOne();}));
+
+
+        bs.addArgs(CommonUtils.getArgs(obj, tableConfig
+                .columnConfigList(e->{return e.isColumn();}).stream()
+                .map(e -> {return e.getAttrName();}).collect(Collectors.toList())));
+        if (tableConfig.isUseGenerate() == false) {
+            bs.addArgs(CommonUtils.getIdArgs(tableConfig, obj));
         }
-        // onesmap的值插入,如果是null,
-     // teacher_id 的值要拿到 
-        for (Iterator iterator = pjc.getOnesMap().keySet().iterator(); iterator.hasNext();) {
-            String teacher_id = (String) iterator.next();
-            // 根据teacher_id拿到 teacher的class
-            String cn = pjc.getOnesMap().get(teacher_id);
-            String ref_name = null; // 关联到teacher的属性名称
-            int k = cn.lastIndexOf("#");
-            if (k != -1) {
-                ref_name = cn.substring(k+1);
-            }else {
-                List<String> ids = config.getPojoConfigMap().get(Class.forName(cn)).getIds();
-                if (ids.size() != 1) {
-                    throw new RuntimeException("please set @one ref at:" + cn);
+        // 如果 引用的对象为NULL， 说明这个关联的字段为NULL,
+        // 如果 引用的对象不为NULL， 关联的字段为 引用对象主键
+        tableConfig.columnConfigList(e->{return e.isOne();}).forEach(e->{
+            // 拿到引用的对象
+            try {
+                Field field = obj.getClass().getDeclaredField(e.getAttrName());
+                field.setAccessible(true);
+                Object ref = field.get(obj);
+                if (ref != null){
+                    // 我们肯定使用的它的唯一id
+                    Object[] tempIds = CommonUtils.getIdArgs(config.getTableConfigMap().get(e.getRef()), ref);
+                    assert  tempIds.length == 1;
+                    bs.addArg(tempIds[0]);
+                } else {
+                    bs.addArg(null);
                 }
-                ref_name = ids.get(0);
+
+            } catch (Exception ex) {
+                ex.printStackTrace();
             }
-            // 先拿到teacher
-            Field field = obj.getClass().getDeclaredField(CommonUtils.teacher_id2teacher(pjc, teacher_id));
-            field.setAccessible(true);
-            Object teacher = field.get(obj);
-            if (teacher == null) {
-                bs.addArg(null);
-                continue;
-            }
-            Field refn = teacher.getClass().getDeclaredField(ref_name);
-            refn.setAccessible(true);
-            Object value = refn.get(teacher);
-            bs.addArg(value);
-            
-        }
+
+        });
         return new StatementMapper(conn, bs);
     }
     
     
     public StatementMapper updateOne(Class<?> clazz, Configuration config, Connection conn, Object obj) throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException, ClassNotFoundException {
-        PJConfig pjc = config.getPojoConfigMap().get(clazz);
+        TableConfig tableConfig = config.getTableConfigMap().get(clazz);
         Map<SqlType, BoundSql> map = config.getSqlsByClass(clazz);
-        BoundSql bs = map.get(SqlType.UPDATE);
-        bs = copy(bs);
+        BoundSql upsql = map.get(SqlType.UPDATE);
+        final BoundSql bs = copy(upsql);
         // id参数作为条件
-        bs.setCommons(CommonUtils.getIdsCommons(pjc));
-        // 把column映射成javaFiled name
-        
-        bs.addArgs(CommonUtils.getArgs(obj, pjc.getColJavas())); // 放入columns
-        // teacher_id 的值要拿到 
-        for (Iterator iterator = pjc.getOnesMap().keySet().iterator(); iterator.hasNext();) {
-            String teacher_id = (String) iterator.next();
-            // 根据teacher_id拿到 teacher的class
-            String cn = pjc.getOnesMap().get(teacher_id);
-            String ref_name = null; // 关联到teacher的属性名称
-            int k = cn.lastIndexOf("#");
-            if (k != -1) {
-                ref_name = cn.substring(k+1);
-            }else {
-                List<String> ids = config.getPojoConfigMap().get(Class.forName(cn)).getIds();
-                if (ids.size() != 1) {
-                    throw new RuntimeException("please set @one ref at:" + cn);
+        bs.setCommons(CommonUtils.getIdsCommons(tableConfig));
+
+        // 添加args
+        tableConfig.columnConfigList(e->{return e.isOne() || e.isColumn();}).forEach(e->{
+            Field field = null;
+            Object ref = null;
+            try {
+                field = obj.getClass().getDeclaredField(e.getAttrName());
+                field.setAccessible(true);
+                ref = field.get(obj);
+                if (ref != null) {
+                    if (e.isColumn()) {
+                        bs.addArg(ref);
+                    } else {
+                        // ref 中 找 @ID 的值
+                        Object[] temp = CommonUtils.getIdArgs(config.getTableConfigMap().get(e.getRef()), ref);
+                        assert temp.length == 1;
+                        bs.addArg(temp[0]);
+                    }
+                } else {
+                    bs.addArg(null);
                 }
-                ref_name = ids.get(0);
+
+            } catch (Exception ex) {
+                ex.printStackTrace();
             }
-            // 先拿到teacher
-            Field field = obj.getClass().getDeclaredField(CommonUtils.teacher_id2teacher(pjc, teacher_id));
-            field.setAccessible(true);
-            Object teacher = field.get(obj);
-            Field refn = teacher.getClass().getDeclaredField(ref_name);
-            refn.setAccessible(true);
-            bs.addArg(refn.get(teacher));
-        }
-        bs.addArgs(CommonUtils.getIdArgs(pjc, obj));
+        });
+
+        bs.addArgs(CommonUtils.getIdArgs(tableConfig, obj));
         return new StatementMapper(conn, bs);
     }
 }

@@ -8,12 +8,18 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
+import com.ren.jdbc.config.ColumnConfig;
 import com.ren.jdbc.config.Configuration;
-import com.ren.jdbc.config.PJConfig;
+import com.ren.jdbc.config.TableConfig;
+import com.ren.jdbc.exception.ConfigException;
 
 /**
  * 根据配置的一些内容生成一些半成品的sql
+ * 根据 POJO类 的class 对象 和 tableConfig 对象, 生成对应的BoundSql对象.
+ * 这个BoundSql 只是一个初步的具有相同共性的SQL. 用这个BoundSQL 方便创建更加具体的BoundSQL语句.
  * @author REN
  *
  */
@@ -27,80 +33,92 @@ public class BoundSqlBuilder {
         this.configuration = configuration;
     }
     public Configuration buildConfig() {
-        Set<Class> cset = configuration.getPojoConfigMap().keySet();
+        Set<Class> cset = configuration.getTableConfigMap().keySet();
         for (Iterator iterator = cset.iterator(); iterator.hasNext();) {
-            Class cz = (Class) iterator.next();
-            PJConfig pjconfig = configuration.getPojoConfigMap().get(cz);
-            Map<SqlType, BoundSql> sqlMap = new HashMap<>();
-            sqlMap.put(SqlType.INSERT, createInsertSql(cz, pjconfig));
-            sqlMap.put(SqlType.UPDATE, createUpdateSql(cz, pjconfig));
-            sqlMap.put(SqlType.DELETE, createDeleteSql(cz, pjconfig));
-            sqlMap.put(SqlType.SELECT, createSelectSql(cz, pjconfig));
+            Class cz = (Class) iterator.next(); // POJO class 对象
+            TableConfig tableConfig = configuration.getTableConfigMap().get(cz); // 单个Table 配置对象
+            Map<SqlType, BoundSql> sqlMap = new ConcurrentHashMap<>();
+            sqlMap.put(SqlType.INSERT, createInsertSql(cz, tableConfig));
+            sqlMap.put(SqlType.UPDATE, createUpdateSql(cz, tableConfig));
+            sqlMap.put(SqlType.DELETE, createDeleteSql(cz, tableConfig));
+            sqlMap.put(SqlType.SELECT, createSelectSql(cz, tableConfig));
             configuration.registerSqlMap(cz, sqlMap);
         }
         try {
             init();
+            System.out.println(configuration);
         } catch (ClassNotFoundException e) {
             throw new RuntimeException(e.getMessage());
         }
         return this.configuration;
     }
     private void init() throws ClassNotFoundException {
-        for (Iterator iterator = configuration.getPojoConfigMap().keySet().iterator(); iterator.hasNext();) {
+        for (Iterator iterator = configuration.getTableConfigMap().keySet().iterator(); iterator.hasNext();) {
             Class clazz = (Class) iterator.next();
-            initOneSql(configuration.getPojoConfigMap().get(clazz));
-            initManySql(configuration.getPojoConfigMap().get(clazz), clazz);
+            initOneSql(configuration.getTableConfigMap().get(clazz));
+            initManySql(configuration.getTableConfigMap().get(clazz));
         }
     }
- // 在boundSql生成之后调用
-    //初始化某些具体的sql(级联)
-    //以onesJavaName为顺序
-    //在生成object[]时亦是如此 no顺序
-    private void initOneSql(PJConfig pjconfig) throws ClassNotFoundException {
-        Map<String, String> onesJavaName = pjconfig.getOnesJavaName();
-        // 生成onesSql,
-        Set<String> keys = onesJavaName.keySet();
-        for (Iterator iterator = keys.iterator(); iterator.hasNext();) {
-            String key = (String) iterator.next(); // teacher
-            String cname = onesJavaName.get(key); // teacher_id
-            String t = pjconfig.getOnesMap().get(cname); // com.ren.test.Teacher#teacher表中的某个列名
-            String rsclass = null;
-            String id = null;
-            int kindex = t.indexOf("#");
-            if (kindex == -1) {
-                rsclass = t;
-            }else {
-                rsclass = t.substring(0, kindex);
-                id = t.substring(kindex + 1);
+
+    /**
+     * 当有@one 属性时, 查询主表一行记录, 顺带把从表{配置了级联查询的@One}也查出来，不要分为两个SQL 。
+     * 比如有User表， Role表.
+     * user{ id, name, desc, role_id, address_id}
+     * role {id, name, desc} 级联= true
+     * Address{id, name, desc, shi_id[ignore this]} 级联= false
+     * shi{id, name}
+     *
+     * 查询List<User> 时, 应该写的SQL 是
+     * select *** from user, role where user.role_id = role.id  [and ( 其他条件 )]
+     *
+     * 具体： user.*   role.*   address.id  这个级联是false
+     * select user.id, user.name, user.desc, user.role_id, role.id, role.name, role.desc from
+     *
+     * user, role, address where user.role_id = role.id and user.address_id = address.id  [...]
+     *
+     * 先不管, 先把Pjconfig 替换掉.
+     * @param tableConfig
+     * @throws ClassNotFoundException
+     */
+    private void initOneSql(TableConfig tableConfig) throws ClassNotFoundException {
+        tableConfig.columnConfigList(e -> {
+            if (e.isOne()){
+                return true;
             }
-            Class clazz = Class.forName(rsclass);
+            return false;
+        }).forEach(e -> {
+            final String key = e.getAttrName(); // myRole 在User类中
+//            String cname = e.getLabelName(); // role_id 在user表
+
+            Class clazz = e.getRef();// One 字段 对应java 类型.
             // // 去查teacher唯一的id
-            PJConfig teacherPJconfig = this.configuration.getPojoConfigMap().get(clazz);
-            if (id == null) {
-                List<String> tids = teacherPJconfig.getIds();
-                if (tids.size() != 1) {
-                    throw  new RuntimeException("@One 没有指定所关联的" + clazz.getSimpleName() + "属性名称");
-                }
-                id = tids.get(0);
-            }
+            TableConfig refTableConfig = this.configuration.getTableConfigMap().get(clazz);
+            String id = e.getRefIdColumnConfig().getLabelName();
+
             // 拿到了teacher的boundsql for select
-            BoundSql bs = this.configuration.getSqlsByClass(clazz).get(SqlType.SELECT);
-            bs = new BoundSql(bs);
+            BoundSql selectbs = this.configuration.getSqlsByClass(clazz).get(SqlType.SELECT);
+            final BoundSql bs = new BoundSql(selectbs);
 //            // 加一个table
 //            bs.getTables().add(pjconfig.getTableName());
             // 开始设置查询条件
             StringBuilder sb = new StringBuilder();
-//            sb.append(oneCommons(pjconfig.getTableName(), teacherPJconfig.getTableName(), 
+//            sb.append(oneCommons(pjconfig.getTableName(), teacherPJconfig.getTableName(),
 //                    cname, id));
 //            for (String idstr:pjconfig.getIds()) {
 //                sb.append(BoundSql.SPACE);
 //                sb.append(BoundSql.AND + BoundSql.SPACE);
 //                sb.append(pjconfig.getTableName() + BoundSql.DOT + idstr + BoundSql.EQUAL + BoundSql.QM);
 //            }
-            sb.append(teacherPJconfig.getTableName() + BoundSql.DOT +id + BoundSql.EQUAL + BoundSql.QM);
+            sb.append(refTableConfig.getTableName() + BoundSql.DOT +id + BoundSql.EQUAL + BoundSql.QM);
             bs.setCommons(sb.toString());
-            pjconfig.getOnesSql().put(key, bs.getSql());
-        }
+            tableConfig.columnConfigList(columnConfig -> {
+                return columnConfig.isOne() &&
+                        columnConfig.getAttrName().equals(key);
+            }).forEach(ele -> {
+                ele.setSql(bs.getSql());
+            });
+        });
+
     }
     // person ,teacher, teacher_id, id
     private String oneCommons(String table, String reftable, String cname, String ref) {
@@ -110,34 +128,33 @@ public class BoundSqlBuilder {
         sb.append(reftable + BoundSql.DOT + ref);
         return sb.toString();
     }
-    private void initManySql(PJConfig pjconfig, Class teacherClass) throws ClassNotFoundException {
-        Map<String, Class<?>> manys = pjconfig.getManys();
-        // 生成onesSql
-        Set<String> keys = manys.keySet();
-        for (Iterator iterator = keys.iterator(); iterator.hasNext();) {
-            String key = (String) iterator.next(); // myStudents
-            Class clazz = manys.get(key); // student的class
-            PJConfig studentPJ = configuration.getPojoConfigMap().get(clazz);
-            String id = null; //teacher_id
-            String id2 = null;//teacher 表的id
-            for (String s :studentPJ.getOnesMap().keySet()) {
-                String czn = studentPJ.getOnesMap().get(s);
-                String czncopy = czn;
-                int k = czncopy.lastIndexOf("#");
-                if (k != -1) {
-                    czncopy = czncopy.substring(0, k);
-                }
-                if (czncopy.equals(teacherClass.getName())) {
-                    id = s;
-                    // id2
-                    if (k != -1) {
-                        id2 = czn.substring(k);
-                    }else {
-                        if (pjconfig.getIds().size()!=1) {
-                            throw new RuntimeException("@One 没有指定一个@Id属性," + teacherClass.getSimpleName() + "存在多个@Id");
-                        }
-                        id2 = pjconfig.getIds().get(0);
+
+    /**
+     * 初始化@Many 的查询SQL ， 这个SQL 查询的视图正是需要查询的table, 只需把当前 role 的ID 列，作为条件.
+     * @param tableConfig
+     * @throws ClassNotFoundException
+     */
+    private void initManySql(TableConfig tableConfig) throws ClassNotFoundException {
+        tableConfig.columnConfigList(e->{
+            return e.isMany();
+        }).forEach(e -> {
+            // e 代表的是 Role 的 userList 配置
+            String key = e.getAttrName(); // userList
+            Class clazz = e.getManyListType(); // User的class
+            TableConfig refTableConfig = configuration.getTableConfigMap().get(clazz);
+            String id = null; //role_id 在  refTable [user]
+            String id2 = null;//role 表的id
+            // 遍历 用户表的@One, 判断
+            for (ColumnConfig cc : refTableConfig.columnConfigList(a->{return  a.isOne();})) {
+                if (cc.getRef().equals(tableConfig.getPojoClass())){ //
+                    // 唯一确定后.
+                    // 找自身的@Id
+                    List<String> tempList = tableConfig.columnList(ele->{return ele.isId();});
+                    if (tempList.isEmpty() || tempList.size() > 1){
+                        throw  new RuntimeException("@Id 在" + tableConfig.getPojoClass() + " 中存在多个或不存在!");
                     }
+                    id2 = tempList.get(0);
+                    id = cc.getLabelName();
                     break;
                 }
             }
@@ -145,63 +162,108 @@ public class BoundSqlBuilder {
             BoundSql bs = this.configuration.getSqlsByClass(clazz).get(SqlType.SELECT);
             bs = new BoundSql(bs);
             // 加一个table
-            bs.getTables().add(pjconfig.getTableName());
+            bs.getTables().add(tableConfig.getTableName());
             // 开始设置查询条件
             StringBuilder sb = new StringBuilder();
-            sb.append(oneCommons(pjconfig.getTableName(), studentPJ.getTableName(), 
+            // role     user
+            sb.append(oneCommons(tableConfig.getTableName(), refTableConfig.getTableName(),
                     id2, id));
-            for (String idstr:pjconfig.getIds()) {
+            // 加上 role.id = ?
+            for (String idstr:tableConfig.columnList(e2->{return e2.isId();})) {
                 sb.append(BoundSql.SPACE);
                 sb.append(BoundSql.AND + BoundSql.SPACE);
-                sb.append(pjconfig.getTableName() + BoundSql.DOT + idstr + BoundSql.EQUAL + BoundSql.QM);
+                sb.append(tableConfig.getTableName() + BoundSql.DOT + idstr + BoundSql.EQUAL + BoundSql.QM);
             }
             bs.setCommons(sb.toString());
-            pjconfig.getManySql().put(key, bs.getSql());
-        }
+            e.setSql(bs.getSql());
+        });
+
     }
-    
-    private BoundSql createInsertSql(Class cz, PJConfig config) {
+
+    /**
+     *
+     * 当前生成的 BoundSql view 只包含@Column 的字段. 如果是没有使用自增主键, 还需要放入@Id 的属性.
+     *
+     * @param cz
+     * @param tableConfig
+     * @return
+     */
+    private BoundSql createInsertSql(Class cz, TableConfig tableConfig) {
         BoundSql bs = new BoundSql();
-        bs.setTables(Arrays.asList(config.getTableName()));
+        bs.setTables(Arrays.asList(tableConfig.getTableName()));
         List<String> view = new ArrayList<>();
         bs.setView(view);
         // 暂且不生成id的视图 以最小的改动为基准
-        view.addAll(config.getColumns());
+        view.addAll(tableConfig.columnList(e -> {
+            if (e.isColumn()){
+                return true;
+            }
+            return false;
+        }));
         bs.setType(SqlType.INSERT);
         return bs;
     }
-    private BoundSql createUpdateSql(Class cz, PJConfig config) {
+
+    /**
+     * 更新 半成品 BoundSQL, 视图部分包含 @Column 和 @One 的字段
+     * update tableName set field1 = ? and field2 = ? where ...
+     * update tableName1, tableName2 set f1 = ? and f2 = ? where ...  (可以更新 连接表), 但是不使用
+     * 这里把 关联的外键包含入内, 所以, 在update方法中, 对于关联的对象 一定不能为空.
+     * @param cz
+     * @param tableConfig
+     * @return
+     */
+    private BoundSql createUpdateSql(Class cz, TableConfig tableConfig) {
         BoundSql bs = new BoundSql();
-        bs.setTables(Arrays.asList(config.getTableName()));
+        bs.setTables(Arrays.asList(tableConfig.getTableName()));
         List<String> view = new ArrayList<>();
         bs.setView(view);
-        view.addAll(config.getColumns());
-        view.addAll(config.getOnesMap().keySet()); //关联的外键
+        view.addAll(tableConfig.columnList(e -> {
+            if (e.isColumn() || e.isOne()){
+                return true;
+            }
+            return false;
+        }));
         bs.setType(SqlType.UPDATE);
         return bs;
     }
-    private BoundSql createDeleteSql(Class cz, PJConfig config) {
+
+    /**
+     * 删除半成品BoundSQL 只包含 type 和 tableName
+     * @param cz
+     * @param config
+     * @return
+     */
+    private BoundSql createDeleteSql(Class cz, TableConfig config) {
         BoundSql bs = new BoundSql();
         bs.setTables(Arrays.asList(config.getTableName()));
         bs.setType(SqlType.DELETE);
         return bs;
     }
-    private BoundSql createSelectSql(Class cz, PJConfig config) {
+
+    /**
+     * 查询半成品BoundSQL, 包含表名, 表名+字段 的视图， @Id @Column @One 都包含
+     * @param cz
+     * @param config
+     * @return
+     */
+    private BoundSql createSelectSql(Class cz, TableConfig config) {
         BoundSql bs = new BoundSql();
         List<String> tbs = new ArrayList<>();
         tbs.add(config.getTableName());
         bs.setTables(tbs);
-        List<String> view = new ArrayList<>();
+
+        List<String> view = config.columnList(e -> {
+            if (!e.isMany()){
+                return true;
+            }
+            return false;
+        });
+        view = view.stream().map(e -> {return config.getTableName() + BoundSql.DOT +e;})
+                .collect(Collectors.toList());
         bs.setView(view);
-        addTable2Column(config.getIds(), view, config.getTableName());
-        addTable2Column(config.getColumns(), view, config.getTableName());
-        addTable2Column(config.getOnesMap().keySet(), view, config.getTableName());
         bs.setType(SqlType.SELECT);
         return bs;
     }
-    // tableName.name
-    private void addTable2Column(Collection<String> list, List<String> view, String tb) {
-        for (String str : list)
-            view.add(tb + BoundSql.DOT + str);
-    }
+
 }

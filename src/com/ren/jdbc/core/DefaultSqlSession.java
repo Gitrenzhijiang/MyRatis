@@ -5,27 +5,32 @@ import java.util.List;
 
 import com.ren.jdbc.config.Configuration;
 import com.ren.jdbc.statement.StatementMapper;
+import com.ren.jdbc.statement.StatementMapperBuilder;
 /**
  * @author REN
- *
+ * 这个对象与基于给定Connection和Executor执行操作.
+ * Thread1:
+ *  SqlSessionImpl@bbb -> Executor@bbb    - - -
+ * Thread2:
+ *  SqlSessionImpl@aaa -> Executor@aaa    - - -   Configutation@One(thread-safe)
+ * Thread3:
+ *  SqlSessionImpl@ccc -> Executor@ccc    - - -
  */
-import com.ren.jdbc.statement.StatementMapperBuilder;
-import com.ren.jdbc.utils.CommonUtils;
 public class DefaultSqlSession implements SqlSession {
     // 是否自动提交
-    private boolean autoCommit;
+//    private boolean autoCommit;
     // 是否使用缓存
     /***
      * 一级缓存忽略
      */
     private boolean usecache;
     
-    public DefaultSqlSession(Connection popConnection, Configuration config,boolean usecache,boolean autoCommit) {
+    public DefaultSqlSession(Connection popConnection, Configuration config, boolean usecache,boolean autoCommit) {
         
         this.conn = popConnection;
         this.config = config;
         this.usecache = usecache;
-        this.autoCommit = autoCommit;
+//        this.autoCommit = autoCommit;
         this.smb = new StatementMapperBuilder();
         // 现在默认使用sessionFactory级别缓存
         this.executor = new CacheExecutor(new BaseExecutor(config));
@@ -79,7 +84,7 @@ public class DefaultSqlSession implements SqlSession {
             throw new RuntimeException(e.getMessage());
         }
     }
-
+    
     @Override
     public <E> int save(E obj) {
         if (obj == null) {

@@ -4,6 +4,7 @@ package com.ren.jdbc.statement;
  * Connection,
  * BoundSql, 已经完全的
  * SQL,实际执行的sql
+ * cascade 是否级联,
  * @author REN
  *
  */
@@ -14,13 +15,13 @@ import com.ren.jdbc.sql.BoundSql;
 
 public class StatementMapper {
     
-    public StatementMapper(Connection conn, BoundSql boundSql, boolean cascade) {
-        super();
-        this.conn = conn;
-        this.boundSql = boundSql;
-        this.sql = boundSql.getSql();
-        this.cascade = cascade;
-    }
+//    public StatementMapper(Connection conn, BoundSql boundSql, boolean cascade) {
+//        super();
+//        this.conn = conn;
+//        this.boundSql = boundSql;
+//        this.sql = boundSql.getSql();
+//        this.cascade = cascade;
+//    }
     public StatementMapper(Connection conn, BoundSql boundSql) {
         super();
         this.conn = conn;

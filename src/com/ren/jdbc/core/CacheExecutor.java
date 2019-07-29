@@ -81,7 +81,4 @@ public class CacheExecutor implements Executor{
     public boolean isClosed() {
         return false;
     }
-
-    
-    
 }

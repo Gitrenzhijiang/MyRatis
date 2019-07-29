@@ -14,7 +14,6 @@ import javax.xml.bind.annotation.adapters.XmlJavaTypeAdapter.DEFAULT;
 /**
  * 指定了实际物理表的某一列的名称
  * @author REN
- *
  */
 public @interface Column {
     String value() default "";
