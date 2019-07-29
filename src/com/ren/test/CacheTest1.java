@@ -10,8 +10,8 @@ import com.ren.jdbc.cache.LRUCache;
 
 public class CacheTest1 {
     public static void main(String[] args) {
-//        test_fifo();
-        test_linkedlist();
+        test_fifo();
+//        test_linkedlist();
     }
     public static void test_linkedlist() {
         LinkedHashMap<String, String> map = new LinkedHashMap<>(30, 1.0f, true);
